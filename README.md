@@ -8,8 +8,12 @@ As of the multi-city update it also extracts a **separate rate per city**
 where the channels publish one, instead of only reading Baghdad.
 
 Sources used right now:
-- `@dollariraqi` — https://t.me/s/dollariraqi (40K+ subscribers)
-- `@dollar_price` — https://t.me/s/dollar_price (46K+ subscribers)
+- `@dollariraqi` — https://t.me/s/dollariraqi (40K+ subscribers) — Baghdad
+- `@dollar_price` — https://t.me/s/dollar_price (46K+ subscribers) — Baghdad
+- `@azura_gold` — https://t.me/s/azura_gold — a **gold dealer in Erbil** that
+  posts one daily USD line among its gold prices (see "Label-anchored rates")
+- `khakishaqlawa.com` — an exchange company in **Erbil**, so this is a real
+  Erbil rate rather than a Baghdad one (see "Exchange-company sources" below)
 - Central Bank official rate (constant, since it's policy-set and rarely moves)
 
 ## Files in this project
@@ -88,7 +92,214 @@ Add a line with a new channel's `t.me/s/<channel>` URL and Vercel will
 pick it up on your next push — no other code changes needed, as long as
 it posts a "بغداد: 123,456" style line somewhere.
 
-## 3. Adding or fixing a city
+## 3. Exchange-company sources (non-Telegram)
+
+A channel can set `type: 'exchange'` to scrape a currency exchange's own rate
+board instead of a Telegram feed:
+
+```js
+{
+  id: 'khaki_shaqlawa',
+  label: 'خاكي شقلاوة - أربيل (khakishaqlawa.com)',
+  url: 'https://khakishaqlawa.com/',
+  type: 'exchange',
+  city: 'erbil',   // the company's location IS the city this rate belongs to
+  side: 'mid'      // 'mid' | 'buy' | 'sell'
+}
+```
+
+- **`city`** is set explicitly, since a shop's board is that city's rate. This
+  is how Erbil gets real data while the Telegram channels only cover Baghdad.
+- **`side`** picks which number to publish. Boards quote buy and sell (e.g.
+  153,725 / 153,800 per $100); `mid` averages them, which is the fairest single
+  number for budgeting. Use `sell` for what you'd pay to buy dollars, or `buy`
+  for what you'd get selling them. Both raw figures are returned as
+  `buyPerUsd` / `sellPerUsd` regardless.
+- The parser is **markup-agnostic**: it strips tags to text, finds the row
+  labelled IQD/دينار, and reads the next two numbers. A site redesign that
+  keeps the same visible content keeps working. Tested against table markup,
+  div markup, an Arabic-only label, and a single-number row.
+
+## Restricting a channel to certain cities
+
+A channel can declare the cities it covers:
+
+```js
+{
+  id: 'azura_gold',
+  label: 'ئازورا گۆڵد - كوردستان (@azura_gold)',
+  url: 'https://t.me/s/azura_gold',
+  cities: ['erbil', 'sulaymaniyah', 'duhok']
+}
+```
+
+Without this, a passing mention of بغداد in one of its posts — a comparison, a
+news line, an ad — would be published as a Baghdad rate from a channel that
+doesn't actually track Baghdad. With it, only the listed cities are extracted.
+Omit `cities` and the channel is scanned for all of them, as before.
+
+### Label-anchored rates (`defaultCity`)
+
+Some channels post **one** regional rate and never name the city on that line.
+@azura_gold is the example: its daily post reads
+
+```
+⚪ ئۆنسەی زێر  4454 دۆلار
+🟡 زێڕی عەیار 21 به 955 هەزار دینار
+🔴 زێڕی عەیار 22 به 1.000 ملیۆن دینار
+💵 نرخی دۆلار ••• 154.000 دینار      ← the only line we want
+زێڕینگری ئــازورا ــ هەولێر           ← the city, 3 lines below
+بازاڕی زێڕینگران ژ.م 07504861391      ← a phone number
+```
+
+City-adjacency matching finds nothing here, because هەولێر sits next to a phone
+number, not a rate. Worse, **two of the gold prices survive the sanity band**:
+`1.000` and `1.091` million dinar (22k and 24k gold) parse to 1000 and 1091,
+which look like plausible dollar rates. Grabbing any number would publish a
+gold price as the exchange rate.
+
+So a channel can set `defaultCities`, which switches on label-anchored
+extraction: find the line that mentions **dollars** but not gold/ounce words
+(عەیار, ئۆنسە, زێڕ, ملیۆن, هەزار …), preferring one that also says نرخ/سعر,
+and read the rate from there. Verified against the real post: it returns 1540
+from `154.000`, and returns nothing for the ounce line, both gold lines, the
+phone-number signature, and a post with no dollar line at all.
+
+```js
+defaultCities: ['erbil', 'sulaymaniyah', 'duhok']
+```
+
+The single rate is published for **every** city listed. For @azura_gold that's
+all three Kurdistan cities, since the channel covers the region rather than
+just its own shop.
+
+This is a deliberate, **per-channel** exception to the rule that a city never
+borrows another city's number — it only applies where `defaultCities` is set,
+and it's opt-in precisely so the choice is visible in the config rather than
+buried in the parser. Baghdad and everywhere else are unaffected.
+
+City-adjacency still runs first, so if the channel ever posts per-city rates
+those are used instead and the fallback never fires. (`defaultCity` as a single
+string is still accepted, and behaves as a one-city list.)
+
+### Kurdish spellings
+
+Kurdistan channels write city names in Sorani: **هەولێر**, **سلێمانی**,
+**دھۆک**. These use letters that don't exist in Arabic (ک ی ێ ۆ ە ھ ڵ ڕ), so
+`normalizeArabic()` now folds them to their Arabic equivalents. Aliases are
+normalised through the same function, so the Arabic and Kurdish spellings of a
+city converge on one form and either will match. Tested with Sorani script, the
+alternate ھ, Arabic spellings, and posts mixing both.
+
+## Finding a JS-rendered site's endpoint
+
+Some exchange sites (e.g. **tekanexchange.net**) don't put their rates in the
+HTML at all — the page ships empty and JavaScript fills in the cards after
+load. Fetching the page returns only the logo and headings, so the `exchange`
+HTML parser finds nothing. There is no point pointing a scraper at the page
+itself; you need the request the page makes.
+
+To find it, on a desktop browser:
+
+1. Open the site, press **F12** → **Network** tab.
+2. Tick **Fetch/XHR** to filter out images and scripts.
+3. Reload the page.
+4. Look for a request whose response contains the rate numbers — usually JSON,
+   often named something like `rates`, `prices`, `api/...`, or a Google
+   Sheets / Firebase / Supabase URL.
+5. Click it → **Response** tab → note the **URL** and the **shape** of the JSON
+   (which array holds the rows, what the USD row's fields are called).
+
+Then add a `type: 'json'` channel — a commented-out template for Tekan is
+already in `lib/scraper.js`, ready to fill in:
+
+```js
+{
+  id: 'tekan',
+  label: 'صرافة تيكان - أربيل (tekanexchange.net)',
+  url: 'https://tekanexchange.net/<the endpoint you found>',
+  type: 'json',
+  city: 'erbil',
+  side: 'mid',
+  listPath: 'rates',                      // dotted path to the array, e.g. 'data.rates'
+  match: { field: 'code', value: 'USD' }, // how to spot the USD row
+  buyField: 'buy',
+  sellField: 'sell'
+}
+```
+
+The parser handles per-$100 (153,725) and per-$1 (1537.25) quoting, nested
+paths, string numbers with commas, and a row that only has one side.
+
+**If there's no such request**, the rates may be embedded in the page's
+JavaScript bundle or rendered from a server template that our fetcher can't
+trigger. In that case scraping isn't practical without a headless browser —
+which won't run on a plain Vercel function — and the honest answer is to skip
+that source or ask the company whether they publish a feed.
+
+## Facebook Pages — what's actually possible
+
+**Scraping facebook.com does not work.** A server-side fetch gets a login wall
+or an empty JavaScript shell; requests from datacenter IPs (like Vercel's) are
+blocked aggressively; class names are obfuscated and rotate, so any selector
+breaks within weeks; and it violates Facebook's Terms of Service. This is
+unlike the `t.me/s/` pages, which Telegram publishes deliberately for
+unauthenticated reading.
+
+The supported route is the **Graph API**, which returns clean JSON. A
+`type: 'facebook'` channel does this:
+
+```js
+{
+  id: 'some_fb_page',
+  label: 'اسم الصفحة (Facebook)',
+  type: 'facebook',
+  pageId: '1234567890',        // numeric Page ID or the page's username
+  tokenEnv: 'FB_PAGE_TOKEN',   // optional; this is the default
+  postLimit: 15
+}
+```
+
+Post text runs through the **same per-city extractor** as Telegram, so a post
+listing بغداد / أربيل / السليمانية yields all three, merged across recent posts
+exactly as the Telegram scraper does.
+
+### The catch: you need a Page access token
+
+This is the part that decides whether it's viable for you:
+
+- **If it's your own Page** (or you're an admin): straightforward. Create an
+  app at developers.facebook.com, generate a Page access token, exchange it for
+  a long-lived one, and set it as `FB_PAGE_TOKEN` in Vercel's environment
+  variables. Long-lived Page tokens generally don't expire while the admin's
+  password is unchanged, but they can be invalidated — the scraper surfaces
+  Facebook's own error message when that happens, and the channel reports
+  `success: false` while the others keep working.
+- **If it's someone else's Page**: reading another Page's posts requires the
+  **Page Public Content Access** permission, which needs App Review plus
+  Business Verification, and Meta grants it sparingly for this kind of use.
+  Realistically, this is not worth pursuing for a personal budgeting app.
+
+### Practical advice
+
+Most Iraqi rate pages post the same content to **both** Facebook and Telegram.
+If the page you have in mind also has a Telegram channel, add that instead —
+it's one line in `CHANNELS`, needs no token, no app review, and no ongoing
+credential maintenance. That's why the two existing sources are Telegram.
+
+### Risks specific to this kind of source
+
+- **It's one company's board, not a market aggregate.** Two Telegram channels
+  disagreeing is a sanity check; a single shop is a single opinion, and it may
+  be stale outside business hours.
+- **Anti-bot protection.** Plain requests without a browser-like User-Agent are
+  refused, so the scraper sends one. If the site later adds Cloudflare or
+  similar, requests from Vercel's datacenter IPs may be blocked — that channel
+  would simply report `success: false` while the others carry on.
+- **Be polite.** This is a small business's own site, not a public API. The
+  existing 5-minute per-channel cache applies here too; don't lower it.
+
+## 4. Adding or fixing a city
 
 Cities live in a second array in the same file:
 
@@ -128,7 +339,7 @@ Arabic-Indic digits (١٥٤.١٠٠) are converted too.
    because the newest post often covers Baghdad only while a slightly older
    one lists the other cities. Each city keeps its newest value.
 
-## 4. Show A / B / C on your site
+## 5. Show A / B / C on your site
 
 ```html
 <div id="rates"></div>
@@ -147,7 +358,7 @@ Arabic-Indic digits (١٥٤.١٠٠) are converted too.
 
 To list every city instead, iterate `data.cityAverages`.
 
-## 5. For your app's own currency conversion (fx-sync.js)
+## 6. For your app's own currency conversion (fx-sync.js)
 
 Update the URL in `fx-sync.js`:
 
