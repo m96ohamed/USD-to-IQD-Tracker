@@ -10,10 +10,22 @@ where the channels publish one, instead of only reading Baghdad.
 Sources used right now:
 - `@dollariraqi` — https://t.me/s/dollariraqi (40K+ subscribers) — Baghdad
 - `@dollar_price` — https://t.me/s/dollar_price (46K+ subscribers) — Baghdad
+- `@Kukh_alomlat` — https://t.me/s/Kukh_alomlat — a Baghdad exchange (حي العدل)
+- `@iqborsa` — https://t.me/s/iqborsa — Baghdad bourse
 - `@azura_gold` — https://t.me/s/azura_gold — a **gold dealer in Erbil** that
   posts one daily USD line among its gold prices (see "Label-anchored rates")
+- `@nrxidolar` — https://t.me/s/nrxidolar — Kurdistan; names the city next to
+  the figure ("بۆڕسەی هەولێر 154,000")
+- `@PMCgroup` — https://t.me/s/PMCgroup — Kurdistan; posts bare
+  "100$=154,100" lines
+- `@bazari_dolaraka` — https://t.me/s/bazari_dolaraka — Kurdistan; "$100=154,050"
+- `@pashagoldd` — https://t.me/s/pashagoldd — Kurdistan; a hashtag line then
+  "$100 = 154,150"
 - `khakishaqlawa.com` — an exchange company in **Erbil**, so this is a real
   Erbil rate rather than a Baghdad one (see "Exchange-company sources" below)
+- `tekanexchange.net` — Erbil, via its JSON endpoint. **Configured but switched
+  off** (`enabled: false`) because its data is stale — see "Tekan and the
+  staleness guard" below
 - Central Bank official rate (constant, since it's policy-set and rarely moves)
 
 ## Files in this project
@@ -182,6 +194,55 @@ City-adjacency still runs first, so if the channel ever posts per-city rates
 those are used instead and the fallback never fires. (`defaultCity` as a single
 string is still accepted, and behaves as a one-city list.)
 
+**The fallback is blocked when a post names an excluded city.** If a
+Kurdistan-scoped channel posts "بغداد 154.100", adjacency finds nothing
+(Baghdad is filtered out) — and without a guard the fallback would then publish
+that Baghdad figure as a Kurdistan rate. `mentionsExcludedCity()` detects the
+named-but-excluded city and skips the fallback entirely.
+
+### The `$` symbol counts as a dollar marker
+
+Several Kurdistan channels post the rate with **no dollar word at all**:
+
+```
+100$=154,100          (@PMCgroup)
+$100=154,050          (@bazari_dolaraka)
+$100 = 154,150        (@pashagoldd, under a hashtag line)
+```
+
+`DOLLAR_WORDS` therefore includes `'$'` as well as دۆلار/دولار/dollar/usd.
+Without it the labeled extractor found nothing on any of these three.
+
+The leading `100` in "100$=154,100" is harmless: the 1,000–3,000 sanity band
+rejects it, leaving 154,100 → 1541. The exclusion words and that band still
+keep out everything else that mentions dollars — verified against gold ounce
+prices, gold in millions, news billions, a phone-number ad, an Istanbul lira
+quote, and a WTI oil price, all of which yield nothing.
+
+### Two guards the Baghdad channels needed
+
+**The official rate must never be read as a market rate.** @iqborsa's
+boilerplate says "سعر البنك المركزي الرسمي هو 132000 لكل 100 دولار". That
+parses to a perfectly plausible 1320 and would have been published as a market
+figure — collapsing the very distinction between the Local Market and Central
+Bank sources. المركزي/الرسمي (and Kurdish ناوەندی/فەرمی) are now in
+`NOT_A_RATE_WORDS`.
+
+**The label is often on the line above the numbers.** Bourse-style posts read
+"سعر الدولار" then "بيع 154,250  شراء 154,100" on the next line. The labeled
+extractor now falls through to the following line when the labelled one carries
+no usable number — provided that line isn't itself excluded, so the official
+rate can't sneak in that way either.
+
+### Channels that also post news
+
+@nrxidolar and @PMCgroup post general news alongside rates, and news is full of
+dollar figures: "١٥٥ ملیار دۆلار", "٥٥ ملیۆن دۆلاری کۆکردەوە", "100 مووشەک".
+The scale words (ملیار/مليار/بلیۆن) and market vocabulary (پشک, کۆمپانیا) are in
+`NOT_A_RATE_WORDS` alongside the gold terms, and the 1,000–3,000 sanity band
+rejects the rest. Verified: four real news posts yield nothing from both the
+adjacency and the labeled extractor.
+
 ### Kurdish spellings
 
 Kurdistan channels write city names in Sorani: **هەولێر**, **سلێمانی**,
@@ -230,6 +291,42 @@ already in `lib/scraper.js`, ready to fill in:
 
 The parser handles per-$100 (153,725) and per-$1 (1537.25) quoting, nested
 paths, string numbers with commas, and a row that only has one side.
+
+### Tekan and the staleness guard
+
+`https://tekanexchange.net/api/rates` was found this way. It returns a **bare
+array** (no wrapper object), with rates already per $1:
+
+```json
+[{"currencyCode":"USD","buyRate":1560,"sellRate":1565,
+  "updatedAt":"2026-06-25T13:54:55.552Z"}, ...]
+```
+
+It's configured and enabled — but note the timestamp. When checked, its USD
+row was **66 days old**, while the market had moved on. An endpoint that keeps
+serving its last value indefinitely looks identical to a live one; only
+`updatedAt` reveals the difference.
+
+So a JSON channel can set `updatedAtField` + `maxAgeDays` (7 here). If the
+matched row is older, the channel throws with the age in its message and
+reports `success: false`, rather than publishing a stale figure as today's
+rate. The other sources are unaffected — Erbil still averages @azura_gold and
+khakishaqlawa.
+
+Because that staleness looks permanent rather than a temporary outage, the
+channel is switched off with `enabled: false`. Left on, it would be fetched and
+fail on every request, and the app would show a permanent "غير متاح مؤقتًا"
+source — misleading for something that isn't merely down. `ACTIVE_CHANNELS`
+filters these out, so the config stays in place without costing a request.
+
+**To turn it back on**, check the USD row's `updatedAt` at
+https://tekanexchange.net/api/rates. If it's current, set `enabled: true` —
+nothing else needs changing, since the parsing is already configured and
+tested. The staleness guard then protects you either way: if their updates stop
+again, the channel drops out on its own instead of publishing an old rate.
+
+If they update daily but you want a wider tolerance, raise `maxAgeDays`;
+removing `updatedAtField` disables the check entirely (not recommended).
 
 **If there's no such request**, the rates may be embedded in the page's
 JavaScript bundle or rendered from a server template that our fetcher can't
