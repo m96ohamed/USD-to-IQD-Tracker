@@ -2,13 +2,13 @@
 // On Vercel this file automatically becomes: https://YOUR_PROJECT.vercel.app/api/rates
 // No routing config needed — Vercel maps /api/<filename>.js to that path.
 
-const { CHANNELS, CITIES, OFFICIAL_RATE_IQD, getChannelRate } = require('../lib/scraper');
+const { ACTIVE_CHANNELS, CITIES, OFFICIAL_RATE_IQD, getChannelRate } = require('../lib/scraper');
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*'); // lets your site call this from a browser
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const channels = await Promise.all(CHANNELS.map(getChannelRate));
+  const channels = await Promise.all(ACTIVE_CHANNELS.map(getChannelRate));
 
   // One entry PER CHANNEL PER CITY, each tagged with `city`. The app matches
   // on that field, so simply publishing more cities here makes them appear in
