@@ -5,7 +5,7 @@
 // Returns a single working rate. Defaults to Baghdad for backwards
 // compatibility; pass ?city=erbil for another city.
 
-const { CHANNELS, getChannelRate } = require('../lib/scraper');
+const { ACTIVE_CHANNELS, getChannelRate } = require('../lib/scraper');
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -14,7 +14,7 @@ module.exports = async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const city = (url.searchParams.get('city') || 'baghdad').toLowerCase();
 
-  for (const channel of CHANNELS) {
+  for (const channel of ACTIVE_CHANNELS) {
     const result = await getChannelRate(channel);
     if (!result.success) continue;
     const rate = result.cityRates && result.cityRates[city];
